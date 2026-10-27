@@ -1,0 +1,216 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DEACTIVATED
+}
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
+  BLOCKED
+}
+
+enum ReceiptStatus {
+  SENT
+  DELIVERED
+  READ
+}
+
+enum CallType {
+  AUDIO
+  VIDEO
+  SCREEN_SHARE
+}
+
+enum CallStatus {
+  RINGING
+  ACTIVE
+  COMPLETED
+  REJECTED
+  MISSED
+}
+
+model User {
+  id           String        @id @default(uuid())
+  username     String        @unique
+  passwordHash String        @map("password_hash")
+  status       UserStatus    @default(ACTIVE)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  devices              Device[]
+  sentFriendships      Friendship[]         @relation("SentFriendships")
+  receivedFriendships  Friendship[]         @relation("ReceivedFriendships")
+  memberships          ConversationMember[]
+  receipts             MessageReceipt[]
+  initiatedCalls       CallSession[]        @relation("InitiatedCalls")
+  callParticipations   CallParticipant[]
+
+  @@map("users")
+}
+
+model Device {
+  id              String            @id @default(uuid())
+  userId          String            @map("user_id")
+  devicePublicKey String            @map("device_public_key")
+  lastSeenAt      DateTime          @default(now()) @map("last_seen_at")
+  revokedAt       DateTime?         @map("revoked_at")
+  createdAt       DateTime          @default(now()) @map("created_at")
+
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  keyBundle       KeyBundle?
+  oneTimePrekeys  OneTimePrekey[]
+  sentEnvelopes   MessageEnvelope[] @relation("SentEnvelopes")
+  recvEnvelopes   MessageEnvelope[] @relation("RecvEnvelopes")
+
+  @@index([userId])
+  @@map("devices")
+}
+
+model KeyBundle {
+  id            String   @id @default(uuid())
+  deviceId      String   @unique @map("device_id")
+  identityKey   String   @map("identity_key")
+  signedPrekey  String   @map("signed_prekey")
+  signature     String
+  keyVersion    Int      @default(1) @map("key_version")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  device        Device   @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@map("key_bundles")
+}
+
+model OneTimePrekey {
+  id         String    @id @default(uuid())
+  deviceId   String    @map("device_id")
+  keyId      Int       @map("key_id")
+  publicKey  String    @map("public_key")
+  consumedAt DateTime? @map("consumed_at")
+
+  device     Device    @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+
+  @@unique([deviceId, keyId])
+  @@index([deviceId, consumedAt])
+  @@map("one_time_prekeys")
+}
+
+model Friendship {
+  id           String           @id @default(uuid())
+  requesterId  String           @map("requester_id")
+  recipientId  String           @map("recipient_id")
+  status       FriendshipStatus @default(PENDING)
+  createdAt    DateTime         @default(now()) @map("created_at")
+
+  requester    User             @relation("SentFriendships", fields: [requesterId], references: [id], onDelete: Cascade)
+  recipient    User             @relation("ReceivedFriendships", fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, recipientId])
+  @@map("friendships")
+}
+
+model Conversation {
+  id        String             @id @default(uuid())
+  type      ConversationType   @default(DIRECT)
+  createdAt DateTime           @default(now()) @map("created_at")
+
+  members   ConversationMember[]
+  messages  MessageEnvelope[]
+  calls     CallSession[]
+
+  @@map("conversations")
+}
+
+model ConversationMember {
+  id             String       @id @default(uuid())
+  conversationId String       @map("conversation_id")
+  userId         String       @map("user_id")
+  role           String       @default("MEMBER")
+  joinedAt       DateTime     @default(now()) @map("joined_at")
+  leftAt         DateTime?    @map("left_at")
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@map("conversation_members")
+}
+
+model MessageEnvelope {
+  id                String          @id @default(uuid())
+  conversationId    String          @map("conversation_id")
+  senderDeviceId    String          @map("sender_device_id")
+  recipientDeviceId String          @map("recipient_device_id")
+  ciphertext        String
+  nonce             String
+  keyVersion        Int             @default(1) @map("key_version")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  expiresAt         DateTime?       @map("expires_at")
+
+  conversation      Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderDevice      Device          @relation("SentEnvelopes", fields: [senderDeviceId], references: [id])
+  recipientDevice   Device          @relation("RecvEnvelopes", fields: [recipientDeviceId], references: [id])
+  receipts          MessageReceipt[]
+
+  @@index([conversationId, createdAt])
+  @@index([recipientDeviceId])
+  @@map("message_envelopes")
+}
+
+model MessageReceipt {
+  id        String          @id @default(uuid())
+  messageId String          @map("message_id")
+  userId    String          @map("user_id")
+  status    ReceiptStatus   @default(SENT)
+  updatedAt DateTime        @updatedAt @map("updated_at")
+
+  message   MessageEnvelope @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("message_receipts")
+}
+
+model CallSession {
+  id             String            @id @default(uuid())
+  conversationId String            @map("conversation_id")
+  initiatorId    String            @map("initiator_id")
+  callType       CallType          @default(AUDIO) @map("call_type")
+  status         CallStatus        @default(RINGING)
+  startedAt      DateTime          @default(now()) @map("started_at")
+  endedAt        DateTime?         @map("ended_at")
+
+  conversation   Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  initiator      User              @relation("InitiatedCalls", fields: [initiatorId], references: [id])
+  participants   CallParticipant[]
+
+  @@map("call_sessions")
+}
+
+model CallParticipant {
+  id        String      @id @default(uuid())
+  callId    String      @map("call_id")
+  userId    String      @map("user_id")
+  joinedAt  DateTime    @default(now()) @map("joined_at")
+  leftAt    DateTime?   @map("left_at")
+
+  call      CallSession @relation(fields: [callId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([callId, userId])
+  @@map("call_participants")
+}
